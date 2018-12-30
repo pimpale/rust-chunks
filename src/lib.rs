@@ -10,7 +10,10 @@ use std::io::BufWriter;
 
 use byteorder::{NativeEndian, ReadBytesExt, WriteBytesExt};
 
-const CHUNK_SIZE: usize = 16;
+const CHUNK_X_SIZE: usize = 16;
+const CHUNK_Y_SIZE: usize = 16;
+const CHUNK_Z_SIZE: usize = 16;
+const CHUNK_VOLUME: usize = CHUNK_X_SIZE * CHUNK_Y_SIZE * CHUNK_Z_SIZE;
 const DATA_SEGMENT_SIZE: usize = 256;
 
 /// 256 bytes of data, to be used for any purpose
@@ -18,47 +21,36 @@ const DATA_SEGMENT_SIZE: usize = 256;
 struct DataSegment {
     data: [u8; DATA_SEGMENT_SIZE],
 }
+
+///A point in 3D space
+#[derive(Copy, Clone, Hash, PartialEq, Eq)]
+struct Point3D {
+    x: u32,
+    y: u32,
+    z: u32,
+}
+
 /// The location of a Chunk in relation to the world
-#[derive(Copy, Clone, Hash, PartialEq, Eq)]
-struct ChunkLocation {
-    x: u32,
-    y: u32,
-    z: u32,
-}
+type ChunkLocation = Point3D;
+
 /// The location of a single voxel in relation to the world
-#[derive(Copy, Clone, Hash, PartialEq, Eq)]
-struct GlobalLocation {
-    x: u32,
-    y: u32,
-    z: u32,
-}
+type GlobalLocation = Point3D;
+
 /// The location of a single voxel in relation to its chunk
-#[derive(Copy, Clone, Hash, PartialEq, Eq)]
-struct VoxelLocation {
-    x: u32,
-    y: u32,
-    z: u32,
-}
-// Represents one 1 meter cube
+type VoxelLocation = Point3D;
+
+/// Represents one 1 meter cube
 #[derive(Copy, Clone)]
 struct Voxel {
-    material_id: u32,
+    value: u32,
     extra_data: Option<DataSegment>,
 }
-/// The type of a voxel
-#[derive(Clone)]
-struct VoxelType {
-    material_id: u32,
-    /// 256 character name
-    name: DataSegment,
-    /// if the voxel is solid enough to be stood upon
-    solid: bool,
-}
+
 /// Represents a collection of voxels that may be loaded and unloaded together
 #[derive(Clone)]
 struct Chunk {
-    /// the voxels contained within this chunk
-    voxels: [[[u32; CHUNK_SIZE]; CHUNK_SIZE]; CHUNK_SIZE],
+    /// the voxels contained within this chunk, it's a cube
+    voxels: [u32; CHUNK_VOLUME],
     /// Extra data
     extra_data: Option<DataSegment>,
 }
@@ -95,45 +87,17 @@ impl DataSegment {
 }
 
 impl Voxel {
-    /// Creates new voxel from voxel type
-    fn new(voxel_type: VoxelType) -> Voxel {
+    fn from_id_with_extra_data(value: u32, extra_data: DataSegment) -> Voxel {
         Voxel {
-            material_id: voxel_type.material_id,
-            extra_data: None,
+            value: value,
+            extra_data: Some(extra_data),
         }
     }
 
-    fn from_id(material_id: u32) -> Voxel {
+    fn new(value: u32) -> Voxel {
         Voxel {
-            material_id: material_id,
+            value: value,
             extra_data: None,
-        }
-    }
-
-    /// Returns the voxeltype of the
-    fn get_type(&self) -> VoxelType {
-        match self.material_id {
-            0 => VoxelType {
-                material_id: 0,
-                name: DataSegment::from("unknown"),
-                solid: true,
-            },
-            1 => VoxelType {
-                material_id: 1,
-                name: DataSegment::from("air"),
-                solid: false,
-            },
-            2 => VoxelType {
-                material_id: 2,
-                name: DataSegment::from("water"),
-                solid: false,
-            },
-            3 => VoxelType {
-                material_id: 3,
-                name: DataSegment::from("stone"),
-                solid: true,
-            },
-            _ => panic!("material id undefined"),
         }
     }
 }
@@ -150,7 +114,7 @@ impl Chunk {
 
     fn from_value_with_extra_data(value: u32, extra_data: Option<DataSegment>) -> Chunk {
         Chunk {
-            voxels: [[[value; CHUNK_SIZE]; CHUNK_SIZE]; CHUNK_SIZE],
+            voxels: [value; CHUNK_VOLUME],
             extra_data: extra_data,
         }
     }
@@ -161,37 +125,34 @@ impl Chunk {
         chunk
     }
 
+    fn get_index(location: VoxelLocation) -> usize {
+        Self::get_index_xyz(location.x, location.y, location.z)
+    }
+
+    fn get_index_xyz(x: u32, y: u32, z: u32) -> usize {
+        (z as usize) * CHUNK_X_SIZE * CHUNK_Y_SIZE + (y as usize) * CHUNK_X_SIZE + (x as usize)
+    }
+
     fn get(&self, location: VoxelLocation) -> Voxel {
-        Voxel::from_id(self.voxels[location.z as usize][location.y as usize][location.x as usize])
+        Voxel::new(self.voxels[Self::get_index(location)])
     }
 
     fn set(&mut self, location: VoxelLocation, voxel: Voxel) -> () {
-        self.voxels[location.z as usize][location.y as usize][location.x as usize] =
-            voxel.material_id;
+        self.voxels[Self::get_index(location)] = voxel.value;
     }
 
     /// Reads from saved file
     fn read(&mut self, stream: &mut BufReader<File>) -> () {
-        for z in 0..CHUNK_SIZE {
-            for y in 0..CHUNK_SIZE {
-                stream
-                    .read_u32_into::<NativeEndian>(&mut self.voxels[z as usize][y as usize])
-                    .unwrap();
-            }
-        }
+        stream
+            .read_u32_into::<NativeEndian>(&mut self.voxels)
+            .unwrap();
         //TODO please read extra data at end into extra_data, if it exists
     }
 
     /// writes to file
     fn write(stream: &mut BufWriter<File>, chunk: Chunk) -> () {
-        for z in 0..CHUNK_SIZE {
-            for y in 0..CHUNK_SIZE {
-                for x in 0..CHUNK_SIZE {
-                    stream
-                        .write_u32::<NativeEndian>(chunk.voxels[z as usize][y as usize][x as usize])
-                        .unwrap();
-                }
-            }
+        for i in 0..CHUNK_VOLUME {
+            stream.write_u32::<NativeEndian>(chunk.voxels[i]).unwrap();
         }
         if chunk.extra_data.is_some() {
             stream.write_all(&chunk.extra_data.unwrap().data).unwrap();
@@ -254,18 +215,18 @@ impl Dimension {
     /// Gets the location of the chunk where this voxel lies
     fn get_chunk_location(location: GlobalLocation) -> ChunkLocation {
         ChunkLocation {
-            x: location.x / (CHUNK_SIZE as u32),
-            y: location.y / (CHUNK_SIZE as u32),
-            z: location.z / (CHUNK_SIZE as u32),
+            x: location.x / (CHUNK_X_SIZE as u32),
+            y: location.y / (CHUNK_Y_SIZE as u32),
+            z: location.z / (CHUNK_Z_SIZE as u32),
         }
     }
 
     /// Gets the location of the voxel in the chunk where this global location lies
     fn get_voxel_location(location: GlobalLocation) -> VoxelLocation {
         VoxelLocation {
-            x: location.x % (CHUNK_SIZE as u32),
-            y: location.y % (CHUNK_SIZE as u32),
-            z: location.z % (CHUNK_SIZE as u32),
+            x: location.x % (CHUNK_X_SIZE as u32),
+            y: location.y % (CHUNK_Y_SIZE as u32),
+            z: location.z % (CHUNK_Z_SIZE as u32),
         }
     }
 
@@ -276,5 +237,3 @@ impl Dimension {
             .get(Self::get_voxel_location(location))
     }
 }
-
-fn main() {}
