@@ -2,13 +2,18 @@
 
 extern crate byteorder;
 
+use std::cmp::Ordering;
+
+use std::hash::{Hash, Hasher};
+
+use std::collections::hash_map::DefaultHasher;
+use std::collections::BinaryHeap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
 use std::fs::File;
 use std::io::BufReader;
 use std::io::BufWriter;
-
 
 const CHUNK_X_SIZE: usize = 16;
 const CHUNK_Y_SIZE: usize = 16;
@@ -23,7 +28,7 @@ struct DataSegment {
 }
 
 ///A point in 3D space
-#[derive(Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Copy, Clone, Default, Hash, PartialEq, Eq)]
 struct Point3D {
     x: u32,
     y: u32,
@@ -68,6 +73,12 @@ struct Scope<T> {
     y_size: u32,
     z_size: u32,
     voxels: Vec<T>,
+}
+
+impl Point3D {
+    fn new(x: u32, y: u32, z: u32) -> Point3D {
+        Point3D { x: x, y: y, z: z }
+    }
 }
 
 impl std::ops::Add for Point3D {
@@ -162,7 +173,7 @@ impl<T: Copy + Default> Chunk<T> {
     }
 }
 
-impl<T:Copy + Default> Dimension<T> {
+impl<T: Copy + Default> Dimension<T> {
     fn new() -> Dimension<T> {
         Dimension {
             loaded_chunks: HashMap::new(),
@@ -241,7 +252,6 @@ impl<T:Copy + Default> Dimension<T> {
     fn get_voxel(&mut self, location: GlobalLocation) -> T {
         let chunk = self.get_chunk(Self::get_chunk_location(location));
         chunk.get(Self::get_voxel_location(location))
-            
     }
 }
 
@@ -272,6 +282,10 @@ impl<T: Copy + Default> Scope<T> {
         }
     }
 
+    fn within_bounds(&self, location: GlobalLocation) -> bool {
+        self.get_index(location) < self.voxels.len()
+    }
+
     fn get(&self, location: GlobalLocation) -> T {
         self.voxels[self.get_index(location)]
     }
@@ -282,4 +296,143 @@ impl<T: Copy + Default> Scope<T> {
     }
 }
 
+///////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////implementation///////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////
 
+struct VoxelType {
+    id: u32,
+    name: String,
+    solid: bool,
+}
+
+#[derive(Clone, Copy, Default)]
+struct Voxel {
+    id: u32,
+    extra_data: Option<DataSegment>,
+}
+
+impl Voxel {
+    fn get_type(&self) -> VoxelType {
+        match self.id {
+            0 => VoxelType {
+                id: 0,
+                name: String::from("unknown"),
+                solid: true,
+            },
+            1 => VoxelType {
+                id: 1,
+                name: String::from("air"),
+                solid: false,
+            },
+            2 => VoxelType {
+                id: 2,
+                name: String::from("water"),
+                solid: false,
+            },
+            3 => VoxelType {
+                id: 3,
+                name: String::from("stone"),
+                solid: true,
+            },
+            _ => panic!("material id undefined"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default, Hash, Eq, PartialEq)]
+struct Node {
+    location: GlobalLocation,
+    cost: u32,
+}
+
+impl Node {
+    fn calculate_hash(&self) -> u64 {
+        let mut s = DefaultHasher::new();
+        self.hash(&mut s);
+        s.finish()
+    }
+}
+
+// The priority queue depends on `Ord`.
+// Explicitly implement the trait so the queue becomes a min-heap
+// instead of a max-heap.
+impl Ord for Node {
+    fn cmp(&self, other: &Node) -> Ordering {
+        // Notice that the we flip the ordering on costs.
+        // In case of a tie we order randomly (by hash)
+        other
+            .cost
+            .cmp(&self.cost)
+            .then_with(|| self.calculate_hash().cmp(&other.calculate_hash()))
+    }
+}
+
+// `PartialOrd` needs to be implemented as well.
+impl PartialOrd for Node {
+    fn partial_cmp(&self, other: &Node) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// If the current location can be travelled by a droid
+fn is_traversable(map: &Scope<Voxel>, location: GlobalLocation) -> bool {
+    let location_underneath = GlobalLocation::new(location.x, location.y, location.z - 1);
+    //check that the current location and the location underneath are defined
+    (map.within_bounds(location) && map.within_bounds(location_underneath)
+     //check that current location is not solid
+     && (!map.get(location).get_type().solid)
+     //check that location down one must be solid
+     && (map.get(location_underneath).get_type().solid))
+}
+
+fn get_djikstra_map(map: &Scope<Voxel>, weights: Vec<(GlobalLocation, u32)>) -> Scope<u32> {
+    // The nodes that are on the exploring front of the djikstra map
+    let mut frontier: BinaryHeap<Node> = BinaryHeap::new();
+    // The nodes that used to be on the exploring front
+    let mut visited: HashSet<Node> = HashSet::new();
+
+    // insert original weights into node tree
+    for (location, weight) in weights.iter() {
+        frontier.push(Node {
+            location: location.clone(),
+            cost: weight.clone(),
+        });
+    }
+
+    while frontier.len() > 0 {
+        let current_node = frontier.pop().unwrap();
+        visited.insert(current_node);
+        for location in [
+            current_node.location - GlobalLocation::new(1, 0, 0),
+            current_node.location + GlobalLocation::new(1, 0, 0),
+            current_node.location - GlobalLocation::new(0, 1, 0),
+            current_node.location + GlobalLocation::new(0, 1, 0),
+            current_node.location - GlobalLocation::new(0, 0, 1),
+            current_node.location + GlobalLocation::new(0, 0, 1),
+        ]
+        .iter()
+        {
+            //if it can be traversed,
+            if is_traversable(map, location.clone())
+                    //if it has not been visited
+                    && !visited.iter().find(|x| &x.location == location).is_some()
+            {
+                // add it to the priority queue
+                frontier.push(Node {
+                    location: location.clone(),
+                    cost: current_node.cost + 1,
+                });
+            }
+        }
+    }
+
+    // Create djikstra map
+    let mut potential_map: Scope<u32> =
+        Scope::new(map.start_location, map.end_location, u32::max_value());
+    //overwrite map with nodes
+    for node in visited.iter() {
+        potential_map.set(node.location, node.cost);
+    }
+    potential_map
+}
