@@ -66,7 +66,7 @@ struct Dimension<T> {
 
 ///Represents a particular section of a dimension
 #[derive(Clone)]
-struct Scope<T> {
+struct Volume<T> {
     start_location: GlobalLocation,
     end_location: GlobalLocation,
     x_size: u32,
@@ -247,7 +247,7 @@ impl<T: Copy + Default> Dimension<T> {
         }
     }
 
-    /// gets voxel at location if available. It is preffered to use get_Scope for better
+    /// gets voxel at location if available. It is preffered to use get_Volume for better
     /// performance
     fn get_voxel(&mut self, location: GlobalLocation) -> T {
         let chunk = self.get_chunk(Self::get_chunk_location(location));
@@ -255,12 +255,12 @@ impl<T: Copy + Default> Dimension<T> {
     }
 }
 
-impl<T: Copy + Default> Scope<T> {
-    fn new(start_location: GlobalLocation, end_location: GlobalLocation, value: T) -> Scope<T> {
+impl<T: Copy + Default> Volume<T> {
+    fn new(start_location: GlobalLocation, end_location: GlobalLocation, value: T) -> Volume<T> {
         let x_size = end_location.x - start_location.x;
         let y_size = end_location.y - start_location.y;
         let z_size = end_location.z - start_location.z;
-        Scope {
+        Volume {
             x_size: x_size,
             y_size: y_size,
             z_size: z_size,
@@ -376,7 +376,7 @@ impl PartialOrd for Node {
 }
 
 /// If the current location can be travelled by a droid
-fn is_traversable(map: &Scope<Voxel>, location: GlobalLocation) -> bool {
+fn is_traversable(map: &Volume<Voxel>, location: GlobalLocation) -> bool {
     let location_underneath = GlobalLocation::new(location.x, location.y, location.z - 1);
     //check that the current location and the location underneath are defined
     (map.within_bounds(location) && map.within_bounds(location_underneath)
@@ -386,7 +386,7 @@ fn is_traversable(map: &Scope<Voxel>, location: GlobalLocation) -> bool {
      && (map.get(location_underneath).get_type().solid))
 }
 
-fn get_djikstra_map(map: &Scope<Voxel>, weights: Vec<(GlobalLocation, u32)>) -> Scope<u32> {
+fn get_djikstra_map(map: &Volume<Voxel>, weights: Vec<(GlobalLocation, u32)>) -> Volume<u32> {
     // The nodes that are on the exploring front of the djikstra map
     let mut frontier: BinaryHeap<Node> = BinaryHeap::new();
     // The nodes that used to be on the exploring front
@@ -400,6 +400,7 @@ fn get_djikstra_map(map: &Scope<Voxel>, weights: Vec<(GlobalLocation, u32)>) -> 
         });
     }
 
+    //while there are still pending nodes
     while frontier.len() > 0 {
         let current_node = frontier.pop().unwrap();
         visited.insert(current_node);
@@ -428,8 +429,8 @@ fn get_djikstra_map(map: &Scope<Voxel>, weights: Vec<(GlobalLocation, u32)>) -> 
     }
 
     // Create djikstra map
-    let mut potential_map: Scope<u32> =
-        Scope::new(map.start_location, map.end_location, u32::max_value());
+    let mut potential_map: Volume<u32> =
+        Volume::new(map.start_location, map.end_location, u32::max_value());
     //overwrite map with nodes
     for node in visited.iter() {
         potential_map.set(node.location, node.cost);
